@@ -50,6 +50,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.package_version != '' &&
+      inputs.upstream_tag == '' &&
       github.repository == 'msitarz/quickjs-ng' &&
       github.ref == 'refs/heads/release/intel-macos'
     uses: ./.github/workflows/intel-macos.yml
