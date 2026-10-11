@@ -34,6 +34,7 @@ jobs:
       github.event_name == 'workflow_dispatch' &&
       ((inputs.package_version != '' &&
         (github.repository != 'msitarz/quickjs-ng' || github.ref != 'refs/heads/release/intel-macos')) ||
+       (inputs.package_version != '' && inputs.upstream_tag != '') ||
        (inputs.publish_intel && inputs.package_version == '') ||
        (inputs.package_version == '' && inputs.upstream_tag == ''))
     runs-on: ubuntu-latest

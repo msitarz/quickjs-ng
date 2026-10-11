@@ -153,7 +153,6 @@ Free-threaded builds are still tested in `main.yml`.
 covers Python 3.10+) plus 12 PyPy wheels (pypy3.10 and pypy3.11 per
 platform/arch, manylinux only — PyPy has no musllinux support).
 
-
 ## Intel macOS release wheel
 
 The `build-intel-macos` target builds one native x86_64 CPython 3.10+ abi3

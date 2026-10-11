@@ -74,14 +74,16 @@ wheel per platform.
 
 On the `release/intel-macos` branch of the `msitarz/quickjs-ng` fork, dispatch
 `build.yml` with `package_version` to build the wrapper release tag
-`v<package_version>`. For the `X.Y.Z.P` version scheme, the engine tag is
-`vX.Y.Z`. The route checks out both exact tags, stamps `pyproject.toml` only in
+`v<package_version>` from `genotrance/quickjs-ng`. For the `X.Y.Z.P` version
+scheme, the engine tag is `vX.Y.Z`. The route resolves and records the exact
+upstream wrapper and engine commits, stamps `pyproject.toml` only in
 the build checkout, and builds one native x86_64 `cp310-abi3` wheel on
 `macos-15-intel`. It checks the Mach-O architecture and macOS 10.15 minimum,
 then installs the wheel outside the source tree and runs the upstream suite on
 CPython 3.10–3.14. CPython 3.14 also runs a real `mermaidx==0.9.5` QuickJS SVG
 render. Build provenance, the wheel and per-interpreter test logs are uploaded
-as workflow artifacts.
+as workflow artifacts. An optional GitHub release is tagged at the automation
+commit; the provenance file identifies the wrapper and engine source commits.
 
 Validation-only dispatch (the default):
 
