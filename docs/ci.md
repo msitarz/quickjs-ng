@@ -9,7 +9,7 @@ Four workflows live under `.github/workflows/`:
 | File | Trigger | Purpose |
 |------|---------|---------|
 | `main.yml` | Push + PR to `main`/`devel` | Fast regression feedback (pytest) |
-| `build.yml` | Push to `main`, `workflow_call`, `workflow_dispatch` | Build abi3 wheels + sdist, publish to PyPI; optionally route an Intel macOS-only release request |
+| `build.yml` | Push to `main` or `release/intel-macos`, `workflow_call`, `workflow_dispatch` | Build abi3 wheels + sdist, publish to PyPI; optionally route an Intel macOS-only release request |
 | `intel-macos.yml` | Called by `build.yml` | Build and test one native x86_64 abi3 wheel; optionally create a GitHub release |
 | `check-upstream.yml` | Monthly cron (1st of month, 06:00 UTC), `workflow_dispatch` | Detect new quickjs-ng upstream tags, trigger `build.yml` |
 
@@ -84,6 +84,12 @@ CPython 3.10–3.14. CPython 3.14 also runs a real `mermaidx==0.9.5` QuickJS SVG
 render. Build provenance, the wheel and per-interpreter test logs are uploaded
 as workflow artifacts. An optional GitHub release is tagged at the automation
 commit; the provenance file identifies the wrapper and engine source commits.
+
+Each push to `release/intel-macos` also resolves the newest non-yanked stable
+`X.Y.Z.P` release from the PyPI JSON API and runs the same Intel build and test
+route with publishing disabled. This supplies branch-validation evidence
+without invoking the existing PyPI publishing chain. Manual dispatch continues
+to accept an explicit `package_version` and optional GitHub release request.
 
 Validation-only dispatch (the default):
 

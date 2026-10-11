@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - release/intel-macos
   workflow_call:
     inputs:
       upstream_tag:
@@ -29,6 +30,57 @@ on:
         type: boolean
 
 jobs:
+  resolve-intel-version:
+    if: >-
+      github.repository == 'msitarz/quickjs-ng' &&
+      github.ref == 'refs/heads/release/intel-macos' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' &&
+        inputs.package_version != '' && inputs.upstream_tag == ''))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      package_version: ${{ steps.resolve.outputs.package_version }}
+    steps:
+      - name: Resolve explicit or latest stable package version
+        id: resolve
+        env:
+          REQUESTED_VERSION: ${{ inputs.package_version }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          requested = os.environ["REQUESTED_VERSION"]
+          version_pattern = re.compile(r"(\d+)\.(\d+)\.(\d+)\.(\d+)")
+          if os.environ["EVENT_NAME"] == "workflow_dispatch":
+              if not version_pattern.fullmatch(requested):
+                  raise SystemExit("package_version must use X.Y.Z.P")
+              version = requested
+          else:
+              request = urllib.request.Request(
+                  "https://pypi.org/pypi/quickjs-ng/json",
+                  headers={"User-Agent": "quickjs-ng-intel-wheel-release"},
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  package = json.load(response)
+              versions = []
+              for candidate, files in package["releases"].items():
+                  match = version_pattern.fullmatch(candidate)
+                  if match and files and any(not item.get("yanked", False) for item in files):
+                      versions.append((tuple(map(int, match.groups())), candidate))
+              if not versions:
+                  raise SystemExit("PyPI has no non-yanked stable X.Y.Z.P release")
+              version = max(versions)[1]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"package_version={version}\n")
+          print(f"Resolved package version: {version}")
+          PY
+
   reject-invalid-intel-route:
     if: >-
       github.event_name == 'workflow_dispatch' &&
@@ -47,16 +99,17 @@ jobs:
           exit 1
 
   intel-macos:
+    needs: resolve-intel-version
     if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.package_version != '' &&
-      inputs.upstream_tag == '' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' &&
+        inputs.package_version != '' && inputs.upstream_tag == '')) &&
       github.repository == 'msitarz/quickjs-ng' &&
       github.ref == 'refs/heads/release/intel-macos'
     uses: ./.github/workflows/intel-macos.yml
     with:
-      package_version: ${{ inputs.package_version }}
-      publish_intel: ${{ inputs.publish_intel }}
+      package_version: ${{ needs.resolve-intel-version.outputs.package_version }}
+      publish_intel: ${{ inputs.publish_intel || false }}
     permissions:
       contents: write
 
@@ -64,6 +117,7 @@ jobs:
     if: >-
       inputs.package_version == '' &&
       !inputs.publish_intel &&
+      !(github.event_name == 'push' && github.ref == 'refs/heads/release/intel-macos') &&
       (github.event_name != 'workflow_dispatch' || inputs.upstream_tag != '')
     runs-on: ubuntu-latest
     outputs:
