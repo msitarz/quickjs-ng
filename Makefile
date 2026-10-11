@@ -20,7 +20,7 @@ build: clean ## Build sdist and wheel
 
 .PHONY: build-intel-macos
 build-intel-macos: ## Build one native x86_64 macOS wheel with pinned isolated setuptools
-	@UV_CACHE_DIR=/private/tmp/quickjs-ng-intel-wheel-release-final-cache _PYTHON_HOST_PLATFORM=macosx-10.15-x86_64 ARCHFLAGS="-arch x86_64" uv build --wheel --python python3.14 --build-constraints release-build-constraints.txt --out-dir dist
+	@_PYTHON_HOST_PLATFORM=macosx-10.15-x86_64 ARCHFLAGS="-arch x86_64" uv build --wheel --python python3.14 --build-constraints release-build-constraints.txt --out-dir dist
 
 .PHONY: clean
 clean: ## Remove build artifacts

@@ -156,6 +156,7 @@ platform/arch, manylinux only — PyPy has no musllinux support).
 ## Intel macOS release wheel
 
 The `build-intel-macos` target builds one native x86_64 wheel and constrains
-the CPython 3.14 isolated PEP 517 build environment with `release-build-constraints.txt`
-(setuptools 84.0.0). Run it on an x86_64 macOS host; the target does not create
-a universal2 binary.
+the CPython 3.14 isolated PEP 517 build environment with
+`release-build-constraints.txt` (setuptools 84.0.0). Run it on an x86_64 macOS
+host; the target does not create a universal2 binary. Set `UV_CACHE_DIR` in the
+environment or on the `make` command line when a custom uv cache is needed.
