@@ -152,3 +152,14 @@ Free-threaded builds are still tested in `main.yml`.
 **Total: 19 wheels** — 7 CPython abi3 wheels (one per platform/arch, each
 covers Python 3.10+) plus 12 PyPy wheels (pypy3.10 and pypy3.11 per
 platform/arch, manylinux only — PyPy has no musllinux support).
+
+
+## Intel macOS release wheel
+
+The `build-intel-macos` target builds one native x86_64 CPython 3.10+ abi3
+wheel from `INTEL_BUILD_SOURCE` (default `.`). It uses CPython 3.14, pins the
+isolated PEP 517 backend to setuptools 84.0.0 through
+`release-build-constraints.txt`, and targets macOS 10.15. On an x86_64 macOS
+host, invoke `make INTEL_BUILD_SOURCE=/path/to/source build-intel-macos`.
+`UV_CACHE_DIR` can be set in the environment or passed to `make` when a custom
+uv cache is needed.

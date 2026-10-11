@@ -47,3 +47,11 @@ This logic ensures:
 - Wrapper-only fixes (e.g. bug fix without upstream change) preserve the patch
   number by leaving `pyproject.toml` unchanged before the build.
 - A new upstream tag always resets the patch to `.1`.
+
+
+## Intel macOS version selection
+
+The `build.yml` Intel route accepts an explicit `X.Y.Z.P` wrapper version and
+selects wrapper tag `vX.Y.Z.P` plus engine tag `vX.Y.Z`. It stamps that exact
+wrapper version in the temporary build checkout; it does not commit a package
+version or engine gitlink change to the automation branch.

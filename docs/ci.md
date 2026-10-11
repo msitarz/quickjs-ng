@@ -4,12 +4,13 @@
 
 ## Workflow Overview
 
-Three workflows live under `.github/workflows/`:
+Four workflows live under `.github/workflows/`:
 
 | File | Trigger | Purpose |
 |------|---------|---------|
 | `main.yml` | Push + PR to `main`/`devel` | Fast regression feedback (pytest) |
-| `build.yml` | Push to `main`, `workflow_call`, `workflow_dispatch` | Build abi3 wheels + sdist, publish to PyPI |
+| `build.yml` | Push to `main`, `workflow_call`, `workflow_dispatch` | Build abi3 wheels + sdist, publish to PyPI; optionally route an Intel macOS-only release request |
+| `intel-macos.yml` | Called by `build.yml` | Build and test one native x86_64 abi3 wheel; optionally create a GitHub release |
 | `check-upstream.yml` | Monthly cron (1st of month, 06:00 UTC), `workflow_dispatch` | Detect new quickjs-ng upstream tags, trigger `build.yml` |
 
 ---
@@ -48,7 +49,8 @@ pytest directly. This gives fast feedback on every push.
 |-------|------|---------------|
 | Push to `main` | Direct push | `true` |
 | `workflow_call` | Triggered by `check-upstream.yml` | `true` |
-| `workflow_dispatch` | Manual trigger with `upstream_tag` input | `true` |
+| `workflow_dispatch` | Manual trigger with explicit `upstream_tag` on the existing route | `true` |
+| `workflow_dispatch` | `package_version` set on `release/intel-macos` in `msitarz/quickjs-ng` | Skips the PyPI build/publish chain; `publish_intel` defaults to `false` |
 
 ### Jobs
 
@@ -67,6 +69,33 @@ wheel per platform.
 
 **`publish`** — Downloads all artifacts, publishes to PyPI via Trusted Publishing
 (OIDC, `id-token: write`), and creates + pushes a git tag.
+
+### Intel macOS-only route
+
+On the `release/intel-macos` branch of the `msitarz/quickjs-ng` fork, dispatch
+`build.yml` with `package_version` to build the wrapper release tag
+`v<package_version>`. For the `X.Y.Z.P` version scheme, the engine tag is
+`vX.Y.Z`. The route checks out both exact tags, stamps `pyproject.toml` only in
+the build checkout, and builds one native x86_64 `cp310-abi3` wheel on
+`macos-15-intel`. It checks the Mach-O architecture and macOS 10.15 minimum,
+then installs the wheel outside the source tree and runs the upstream suite on
+CPython 3.10–3.14. CPython 3.14 also runs a real `mermaidx==0.9.5` QuickJS SVG
+render. Build provenance, the wheel and per-interpreter test logs are uploaded
+as workflow artifacts.
+
+Validation-only dispatch (the default):
+
+```sh
+gh workflow run build.yml --repo msitarz/quickjs-ng --ref release/intel-macos \
+  -f package_version=0.17.0.1 -f publish_intel=false
+```
+
+To request the optional GitHub release after every test passes, set
+`publish_intel=true`. It creates `v<package_version>-intel-macos`, attaches the
+wheel, provenance and test logs, and fails if that tag or release already
+exists. This route never publishes to PyPI. It is gated to the fork and
+`release/intel-macos`; the old route still requires an explicit `upstream_tag`
+when manually dispatched.
 
 ### Build matrix
 

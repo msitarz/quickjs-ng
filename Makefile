@@ -18,6 +18,12 @@ test: ## Run the test suite with coverage
 build: clean ## Build sdist and wheel
 	@uv build
 
+.PHONY: build-intel-macos
+build-intel-macos: ## Build one native x86_64 macOS wheel from INTEL_BUILD_SOURCE
+	@cd "$(INTEL_BUILD_SOURCE)" && MACOSX_DEPLOYMENT_TARGET=10.15 _PYTHON_HOST_PLATFORM=macosx-10.15-x86_64 ARCHFLAGS="-arch x86_64" uv build --wheel --python python3.14 --build-constraints "$(CURDIR)/release-build-constraints.txt" --out-dir dist
+
+INTEL_BUILD_SOURCE ?= .
+
 .PHONY: clean
 clean: ## Remove build artifacts
 	@rm -rf dist/ build/ *.egg-info quickjs.egg-info quickjs_ng.egg-info wheelhouse/

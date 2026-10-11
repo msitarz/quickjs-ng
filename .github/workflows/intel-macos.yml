@@ -1,0 +1,386 @@
+name: Intel macOS wheel
+
+on:
+  workflow_call:
+    inputs:
+      package_version:
+        description: "Wrapper version tag to build (e.g. 0.17.0.1)"
+        required: true
+        type: string
+      publish_intel:
+        description: "Create a v<VERSION>-intel-macos GitHub release after validation"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build native x86_64 wheel
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      wrapper_sha: ${{ steps.resolve.outputs.wrapper_sha }}
+      engine_sha: ${{ steps.engine.outputs.engine_sha }}
+      wrapper_tag: ${{ steps.resolve.outputs.wrapper_tag }}
+      engine_tag: ${{ steps.resolve.outputs.engine_tag }}
+    steps:
+      - name: Check out automation source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: automation
+          persist-credentials: false
+
+      - name: Check out requested wrapper release tag
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: v${{ inputs.package_version }}
+          path: source
+          persist-credentials: false
+
+      - name: Set up CPython 3.14
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Resolve and validate source tags
+        id: resolve
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          version = os.environ["PACKAGE_VERSION"]
+          match = re.fullmatch(r"(\d+\.\d+\.\d+)\.(\d+)", version)
+          if match is None:
+              raise SystemExit("package_version must use X.Y.Z.P, for example 0.17.0.1")
+
+          wrapper_tag = f"v{version}"
+          engine_tag = f"v{match.group(1)}"
+          source = Path(os.environ["GITHUB_WORKSPACE"]) / "source"
+          checked_wrapper_sha = subprocess.check_output(
+              ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+          ).strip()
+          tagged_wrapper_sha = subprocess.check_output(
+              ["git", "-C", str(source), "rev-parse", f"refs/tags/{wrapper_tag}^{{commit}}"],
+              text=True,
+          ).strip()
+          if checked_wrapper_sha != tagged_wrapper_sha:
+              raise SystemExit(f"checkout is not the exact wrapper tag {wrapper_tag}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"wrapper_tag={wrapper_tag}\n")
+              output.write(f"engine_tag={engine_tag}\n")
+              output.write(f"wrapper_sha={checked_wrapper_sha}\n")
+          print(f"Wrapper tag {wrapper_tag}: {checked_wrapper_sha}")
+          print(f"Engine tag selected from version scheme: {engine_tag}")
+          PY
+
+      - name: Initialize submodules and select matching engine tag
+        id: engine
+        env:
+          ENGINE_TAG: ${{ steps.resolve.outputs.engine_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE/source" submodule update --init --recursive
+          git -C "$GITHUB_WORKSPACE/source/upstream-quickjs" fetch --tags origin
+          git -C "$GITHUB_WORKSPACE/source/upstream-quickjs" checkout --detach "refs/tags/$ENGINE_TAG"
+          ENGINE_SHA="$(git -C "$GITHUB_WORKSPACE/source/upstream-quickjs" rev-parse HEAD)"
+          echo "engine_sha=$ENGINE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Engine $ENGINE_TAG: $ENGINE_SHA"
+
+      - name: Stamp requested package version in the build checkout
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("source/pyproject.toml")
+          text = path.read_text(encoding="utf-8")
+          text, count = re.subn(
+              r'(?m)^version = "[^"\n]+"$',
+              f'version = "{os.environ["PACKAGE_VERSION"]}"',
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("could not stamp exactly one package version in pyproject.toml")
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - name: Check native runner architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          xcode-select -p
+          clang --version | head -1
+          python --version
+
+      - name: Build with the reusable Intel target
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C "$GITHUB_WORKSPACE/automation" \
+            INTEL_BUILD_SOURCE="$GITHUB_WORKSPACE/source" \
+            build-intel-macos 2>&1 | tee "$RUNNER_TEMP/build.log"
+          cp "$RUNNER_TEMP/build.log" "$GITHUB_WORKSPACE/source/dist/build.log"
+
+      - name: Verify wheel platform, ABI, and Mach-O minimum
+        id: wheel
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import tempfile
+          import zipfile
+          from pathlib import Path
+
+          dist = Path("source/dist")
+          wheels = list(dist.glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel, found {len(wheels)}")
+          wheel = wheels[0]
+          if not wheel.name.endswith("-cp310-abi3-macosx_10_15_x86_64.whl"):
+              raise SystemExit(f"unexpected wheel filename/tag: {wheel.name}")
+          if "universal2" in wheel.name:
+              raise SystemExit("universal2 wheel is not accepted")
+
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              wheel_metadata = next(n for n in names if n.endswith(".dist-info/WHEEL"))
+              package_metadata = next(n for n in names if n.endswith(".dist-info/METADATA"))
+              wheel_text = archive.read(wheel_metadata).decode()
+              package_text = archive.read(package_metadata).decode()
+              if "Tag: cp310-abi3-macosx_10_15_x86_64" not in wheel_text:
+                  raise SystemExit("wheel metadata does not declare the expected cp310 abi3 Intel tag")
+              if f"Version: {os.environ['PACKAGE_VERSION']}" not in package_text:
+                  raise SystemExit("wheel metadata version does not match package_version")
+              if "Generator: setuptools (84.0.0)" not in wheel_text:
+                  raise SystemExit("wheel was not built with the pinned setuptools 84.0.0")
+              extension = next(n for n in names if n.endswith("/_quickjs.abi3.so") or n == "_quickjs.abi3.so")
+              with tempfile.TemporaryDirectory() as temp_dir:
+                  binary = Path(temp_dir) / "_quickjs.abi3.so"
+                  binary.write_bytes(archive.read(extension))
+                  archs = subprocess.check_output(["lipo", "-archs", str(binary)], text=True).split()
+                  if archs != ["x86_64"]:
+                      raise SystemExit(f"expected only x86_64 Mach-O architecture, got {archs}")
+                  load_commands = subprocess.check_output(["otool", "-l", str(binary)], text=True)
+                  match = re.search(
+                      r"cmd LC_BUILD_VERSION\s+cmdsize \d+\s+platform \d+\s+minos ([0-9.]+)",
+                      load_commands,
+                  )
+                  load_command = "LC_BUILD_VERSION"
+                  if match is None:
+                      match = re.search(
+                          r"cmd LC_VERSION_MIN_MACOSX\s+cmdsize \d+\s+version ([0-9.]+)",
+                          load_commands,
+                      )
+                      load_command = "LC_VERSION_MIN_MACOSX"
+                  if match is None:
+                      raise SystemExit("missing Mach-O macOS minimum version load command")
+                  if match.group(1) != "10.15":
+                      raise SystemExit(f"wheel tag requires macOS 10.15 but Mach-O minimum is {match.group(1)}")
+                  print("lipo -archs:", " ".join(archs))
+                  print(f"{load_command} minimum OS:", match.group(1))
+
+          print("Wheel:", wheel)
+          print(wheel_text.rstrip())
+          print("Package version:", os.environ["PACKAGE_VERSION"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"wheel={wheel.resolve()}\n")
+          PY
+
+      - name: Write build provenance
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          WRAPPER_TAG: ${{ steps.resolve.outputs.wrapper_tag }}
+          WRAPPER_SHA: ${{ steps.resolve.outputs.wrapper_sha }}
+          ENGINE_TAG: ${{ steps.resolve.outputs.engine_tag }}
+          ENGINE_SHA: ${{ steps.engine.outputs.engine_sha }}
+          AUTOMATION_SHA: ${{ github.sha }}
+          WHEEL_PATH: ${{ steps.wheel.outputs.wheel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          WHEEL_SHA="$(shasum -a 256 "$WHEEL_PATH" | awk '{print $1}')"
+          {
+            echo "Intel macOS wheel provenance"
+            echo "Package version: $PACKAGE_VERSION"
+            echo "Wrapper tag: $WRAPPER_TAG"
+            echo "Wrapper commit: $WRAPPER_SHA"
+            echo "Engine tag: $ENGINE_TAG"
+            echo "Engine commit: $ENGINE_SHA"
+            echo "Automation commit: $AUTOMATION_SHA"
+            echo "Runner: $(uname -a)"
+            echo "macOS: $(sw_vers -productVersion)"
+            echo "Compiler: $(clang --version | head -1)"
+            echo "Python: $(python --version 2>&1)"
+            echo "Wheel: $(basename "$WHEEL_PATH")"
+            echo "Wheel SHA-256: $WHEEL_SHA"
+          } > "$GITHUB_WORKSPACE/source/dist/provenance.txt"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: intel-macos-wheel
+          path: source/dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  test:
+    name: CPython ${{ matrix.python-version }} wheel tests
+    needs: build
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    permissions:
+      contents: read
+    steps:
+      - name: Check out matching wrapper tests
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: v${{ inputs.package_version }}
+          path: source
+          persist-credentials: false
+
+      - name: Set up CPython ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: intel-macos-wheel
+          path: ${{ runner.temp }}/intel-macos-wheel
+
+      - name: Install wheel and run upstream tests outside checkout
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+          MERMAID_SMOKE: ${{ matrix.python-version == '3.14' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          WHEEL="$(find "$RUNNER_TEMP/intel-macos-wheel" -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$WHEEL"
+          python -m pip install pytest==9.0.2
+          python -m pip install --no-deps "$WHEEL"
+          cd "$RUNNER_TEMP"
+          python - <<'PY' | tee "$RUNNER_TEMP/test.log"
+          import os
+          import sys
+          import quickjs
+          import _quickjs
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]) / "source"
+          for module in (quickjs, _quickjs):
+              module_path = Path(module.__file__).resolve()
+              if workspace in module_path.parents:
+                  raise SystemExit(f"loaded {module.__name__} from source checkout: {module_path}")
+              if Path(sys.prefix) not in module_path.parents:
+                  raise SystemExit(f"loaded {module.__name__} outside test environment: {module_path}")
+              print(f"{module.__name__}: {module_path}")
+          print("Python:", sys.version.split()[0])
+          PY
+          python -m pytest "$GITHUB_WORKSPACE/source/tests" -q 2>&1 | tee -a "$RUNNER_TEMP/test.log"
+          if [[ "$MERMAID_SMOKE" == "true" ]]; then
+            python -m pip install mermaidx==0.9.5
+            python -c 'from importlib.metadata import version; from mermaidx import render; source="flowchart TD\n  A[QuickJS wheel] --> B[SVG rendered]"; svg=render(source,backend="quickjs").svg(); assert "<svg" in svg and len(svg)>100; print("mermaidx",version("mermaidx"),"quickjs-ng",version("quickjs-ng"),"SVG chars",len(svg))' 2>&1 | tee -a "$RUNNER_TEMP/test.log"
+          fi
+          cp "$RUNNER_TEMP/test.log" "$RUNNER_TEMP/test-$PYTHON_VERSION.log"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: intel-test-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/test-${{ matrix.python-version }}.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish-intel-release:
+    if: >-
+      inputs.publish_intel &&
+      github.repository == 'msitarz/quickjs-ng' &&
+      github.ref == 'refs/heads/release/intel-macos'
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: intel-macos-wheel
+          path: ${{ runner.temp }}/release
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: intel-test-*
+          path: ${{ runner.temp }}/release/test-logs
+          merge-multiple: true
+
+      - name: Create a new GitHub release without replacing tags or assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          WRAPPER_SHA: ${{ needs.build.outputs.wrapper_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${PACKAGE_VERSION}-intel-macos"
+          REMOTE="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          EXISTING_TAGS="$(git ls-remote --refs "$REMOTE" "refs/tags/$TAG")"
+          if [[ -n "$EXISTING_TAGS" ]]; then
+            echo "Refusing to replace existing tag $TAG" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to replace existing release $TAG" >&2
+            exit 1
+          fi
+          shopt -s nullglob
+          TEST_LOGS=("$RUNNER_TEMP"/release/test-logs/*.log)
+          if [[ ${#TEST_LOGS[@]} -ne 5 ]]; then
+            echo "Expected five passing interpreter logs, found ${#TEST_LOGS[@]}" >&2
+            exit 1
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$WRAPPER_SHA" \
+            --title "quickjs-ng $PACKAGE_VERSION Intel macOS wheel" \
+            --notes "Native x86_64 cp310-abi3 wheel. Source SHAs, binary checks, and test results are attached." \
+            "$RUNNER_TEMP"/release/*.whl \
+            "$RUNNER_TEMP"/release/provenance.txt \
+            "$RUNNER_TEMP"/release/build.log \
+            "$TEST_LOGS[@]"

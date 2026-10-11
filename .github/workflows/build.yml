@@ -13,12 +13,56 @@ on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: "Upstream quickjs-ng tag to build against (e.g. v0.12.1)"
-        required: true
+        description: "Upstream quickjs-ng tag for the existing PyPI build route"
+        required: false
+        default: ""
         type: string
+      package_version:
+        description: "Wrapper version for the Intel macOS-only route (e.g. 0.17.0.1)"
+        required: false
+        default: ""
+        type: string
+      publish_intel:
+        description: "Create a v<VERSION>-intel-macos GitHub release after validation"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
+  reject-invalid-intel-route:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      ((inputs.package_version != '' &&
+        (github.repository != 'msitarz/quickjs-ng' || github.ref != 'refs/heads/release/intel-macos')) ||
+       (inputs.publish_intel && inputs.package_version == '') ||
+       (inputs.package_version == '' && inputs.upstream_tag == ''))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Reject unsafe Intel release request
+        run: |
+          echo "Intel route requires msitarz/quickjs-ng on release/intel-macos with package_version; the existing PyPI route requires upstream_tag." >&2
+          exit 1
+
+  intel-macos:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.package_version != '' &&
+      github.repository == 'msitarz/quickjs-ng' &&
+      github.ref == 'refs/heads/release/intel-macos'
+    uses: ./.github/workflows/intel-macos.yml
+    with:
+      package_version: ${{ inputs.package_version }}
+      publish_intel: ${{ inputs.publish_intel }}
+    permissions:
+      contents: write
+
   setup:
+    if: >-
+      inputs.package_version == '' &&
+      !inputs.publish_intel &&
+      (github.event_name != 'workflow_dispatch' || inputs.upstream_tag != '')
     runs-on: ubuntu-latest
     outputs:
       upstream_tag: ${{ steps.resolve.outputs.upstream_tag }}
@@ -32,10 +76,12 @@ jobs:
       - name: Resolve tag and version
         id: resolve
         shell: bash
+        env:
+          UPSTREAM_TAG_INPUT: ${{ inputs.upstream_tag }}
         run: |
-          if [ -n "${{ inputs.upstream_tag }}" ]; then
+          if [ -n "$UPSTREAM_TAG_INPUT" ]; then
             # Called from workflow_call or workflow_dispatch with explicit tag
-            TAG="${{ inputs.upstream_tag }}"
+            TAG="$UPSTREAM_TAG_INPUT"
             cd upstream-quickjs
             git fetch --tags
             git checkout "$TAG"
@@ -67,7 +113,7 @@ jobs:
           fi
 
           PUBLISH="false"
-          if [ "${{ github.ref }}" = "refs/heads/main" ] || [ "${{ github.event_name }}" = "workflow_call" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$GITHUB_REF" = "refs/heads/main" ] || [ "$GITHUB_EVENT_NAME" = "workflow_call" ] || [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             PUBLISH="true"
           fi
 
