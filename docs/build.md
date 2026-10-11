@@ -152,3 +152,10 @@ Free-threaded builds are still tested in `main.yml`.
 **Total: 19 wheels** — 7 CPython abi3 wheels (one per platform/arch, each
 covers Python 3.10+) plus 12 PyPy wheels (pypy3.10 and pypy3.11 per
 platform/arch, manylinux only — PyPy has no musllinux support).
+
+## Intel macOS release wheel
+
+The `build-intel-macos` target builds one native x86_64 wheel and constrains
+the CPython 3.14 isolated PEP 517 build environment with `release-build-constraints.txt`
+(setuptools 84.0.0). Run it on an x86_64 macOS host; the target does not create
+a universal2 binary.
